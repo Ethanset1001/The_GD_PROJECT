@@ -1,30 +1,27 @@
-# version 1
-
 from pathlib import Path
 import gmdkit
 import tkinter as tk
 import math
+import time
 
 # 1. DATA LOADING
 data = Path("level.gmd").read_text(errors="ignore")
 lvl = None
 
-if hasattr(gmdkit, "parse_level"):
-    lvl = gmdkit.parse_level(data)
-elif hasattr(gmdkit, "load_level"):
-    lvl = gmdkit.load_level(data)
-elif hasattr(gmdkit, "decode"):
-    lvl = gmdkit.decode(data)
-elif hasattr(gmdkit, "Level"):
+for method in ["parse_level", "load_level", "decode"]:
+    if hasattr(gmdkit, method):
+        lvl = getattr(gmdkit, method)(data)
+        break
+if lvl is None and hasattr(gmdkit, "Level"):
     try: lvl = gmdkit.Level.from_string(data)
-    except: lvl = None
+    except: pass
 
 if lvl is None:
     raise SystemExit
 
 # 2. SETUP
 root = tk.Tk()
-root.title("GMD Runner - Precision Spike Hitbox")
+root.title("GMD Runner - Instant Blue Orb Fix")
 cw, ch = 900, 500
 c = tk.Canvas(root, width=cw, height=ch, bg="#287DFF", highlightthickness=0)
 c.pack()
@@ -37,136 +34,162 @@ objs = getattr(lvl, "objects", [])
 
 # 3. GAME STATE
 GRID = 30
-spawn_off = 300 
-px = -spawn_off
-py = 300
+SPAWN_X, SPAWN_Y = -300, 300
+px, py = SPAWN_X, SPAWN_Y
 vx, vy = 0, 0
 w, h = 30, 30
-rot = 0 
+rot, camx = 0, 0
+ong, pressing, dead = False, False, False
+gravity_dir = 1 
+last_orb_id = -1 
 
-# DO NOT TOUCH THESE. THESE ARE ACCURATE GD PHYSICS. well kinda accurate ya
-spd = 6.6        
-g = 1.08          
-jmp = -12.65     
-terminal_v = 18        
+# PHYSICS
+spd = 5.5        
+base_g = 1.08          
+jmp_power = -11.65     
+terminal_v = 18   
 
-ong = False
-camx = 0
+BLOCK_IDS = {1, 2, 3, 4, 6, 7, 63, 69, 70, 71, 72, 74, 75}
+SPIKE_IDS = {8, 9}
+SMALL_SPIKE_ID = 39
+ORB_YELLOW = 36
+ORB_BLUE = 84
 
-def aabb(x1, y1, w1, h1, x2, y2, w2, h2):
-    return x1 < x2 + w2 and x1 + w1 > x2 and y1 < y2 + h2 and y1 + h1 > y2
+last_frame_time = time.time()
 
-def rotate_point(cx, cy, angle, px, py):
-    s = math.sin(math.radians(angle))
-    c = math.cos(math.radians(angle))
-    px -= cx
-    py -= cy
-    return (px * c - py * s) + cx, (px * s + py * c) + cy
+def respawn():
+    global px, py, vy, rot, camx, ong, dead, gravity_dir, last_orb_id
+    px, py, vy, rot, dead, gravity_dir = SPAWN_X, SPAWN_Y, 0, 0, False, 1
+    last_orb_id = -1
+    camx = px - 200
+
+def trigger_death():
+    global dead
+    if not dead:
+        dead = True
+        root.after(400, respawn)
 
 # 4. GAME LOOP
 def update():
-    global px, py, vx, vy, ong, camx, rot
+    global px, py, vy, ong, camx, rot, last_frame_time, gravity_dir, last_orb_id
 
-    px += spd
-    camx = px - 200 
-
-    vy += g
-    if vy > terminal_v: vy = terminal_v
-    py += vy
+    current_time = time.time()
+    elapsed = current_time - last_frame_time
     
-    ong = False
+    if elapsed >= 0.016:
+        last_frame_time = current_time
 
-    # Floor Collision
-    if py > ch - h:
-        py = ch - h
-        vy = 0
-        ong = True
+        if not dead:
+            if pressing and ong:
+                vy = jmp_power * gravity_dir
 
-    # Hitbox Constants
-    inner_size = 30 / 2.5
-    inner_off = (30 - inner_size) / 2
-    
-    # Spike Hitbox Constants (12x16)
-    shw, shh = 12, 16
-    shx_off = (30 - shw) / 2
-    shy_off = 30 - shh # Anchored to the bottom of the grid cell
+            px += spd
+            camx = px - 200 
+            
+            vy += (base_g * gravity_dir)
+            if abs(vy) > terminal_v: vy = terminal_v * (1 if vy > 0 else -1)
+            py += vy
+            
+            ong = False
+            if gravity_dir == 1 and py > ch - h:
+                py, vy, ong = ch - h, 0, True
+            elif gravity_dir == -1 and py < 0:
+                py, vy, ong = 0, 0, True
 
-    for o in objs:
-        oid, ox, oy = gv(o, 1), gv(o, 2), gv(o, 3)
-        if ox is None or oy is None: continue
+            orb_touched_this_frame = False
+            io, is_ = 9, 12 # Yellow Hitbox Offset/Size
 
-        bx, by = ox - (GRID / 2), (ch - oy) - (GRID / 2) 
+            for o in objs:
+                oid, ox, oy = gv(o, 1), gv(o, 2), gv(o, 3)
+                if ox is None or oy is None: continue
+                bx, by = ox - 15, (ch - oy) - 15
 
-        # BLOCK LOGIC
-        if oid == 1:
-            if aabb(px, py, w, h, bx, by, GRID, GRID):
-                if vy >= 0 and (py + h - vy) <= by + 15:
-                    py = by - h
-                    vy = 0
-                    ong = True
-                elif aabb(px + inner_off, py + inner_off, inner_size, inner_size, bx, by, GRID, GRID):
-                    root.destroy()
-                    return
+                if abs(px - bx) > 60: continue
 
-        # SPIKE LOGIC (12x16 Hitbox)
-        elif oid == 8:
-            # We check the player's full 30x30 spike hitbox against the 12x16 spike zone
-            if aabb(px, py, w, h, bx + shx_off, by + shy_off, shw, shh):
-                root.destroy()
-                return
+                if oid in BLOCK_IDS:
+                    if px < bx + 30 and px + 30 > bx and py < by + 30 and py + 30 > by:
+                        is_falling = (gravity_dir == 1 and vy >= 0) or (gravity_dir == -1 and vy <= 0)
+                        feet_y = (py + 30) if gravity_dir == 1 else py
+                        prev_feet_y = (feet_y - vy)
+                        
+                        if is_falling and ((gravity_dir == 1 and prev_feet_y <= by + 12) or 
+                                           (gravity_dir == -1 and prev_feet_y >= by + 18)):
+                            py = (by - 30) if gravity_dir == 1 else (by + 30)
+                            vy, ong = 0, True
+                        else:
+                            if (px + io < bx + 30 and px + io + is_ > bx and 
+                                py + io < by + 30 and py + io + is_ > by):
+                                if (gravity_dir == 1 and vy < 0) or (gravity_dir == -1 and vy > 0):
+                                    py = (by + 30 - io) if gravity_dir == 1 else (by - is_ - io)
+                                    vy = 0
+                                else:
+                                    trigger_death()
+                
+                elif oid in SPIKE_IDS:
+                    if px < bx + 19 and px + 11 > bx and py < by + 26 and py + 14 > by:
+                        trigger_death()
+                elif oid == SMALL_SPIKE_ID:
+                    if px < bx + 19 and px + 11 > bx and py < by + 22.5 and py + 16.5 > by:
+                        trigger_death()
 
-    if not ong:
-        rot += 8  
-    else:
-        rot = (round(rot / 90) * 90) % 360
+                elif oid in {ORB_YELLOW, ORB_BLUE}:
+                    dist = math.sqrt((px+15 - (bx+15))**2 + (py+15 - (by+15))**2)
+                    if dist < 25:
+                        orb_touched_this_frame = True
+                        if pressing and id(o) != last_orb_id:
+                            last_orb_id = id(o)
+                            if oid == ORB_YELLOW:
+                                vy = -11.5 * gravity_dir 
+                            elif oid == ORB_BLUE:
+                                # PURE INSTANT GRAVITY SWITCH
+                                gravity_dir *= -1
+                                vy = 0 
+            
+            if not orb_touched_this_frame: last_orb_id = -1
 
-    draw()
-    root.after(16, update) 
+            if not ong: rot += 8 * gravity_dir
+            else: rot = (round(rot / 90) * 90) % 360
+
+        draw()
+
+    root.after(1, update) 
 
 # 5. RENDERING
+def rotate_point(cx, cy, angle, px, py):
+    s, c_val = math.sin(math.radians(angle)), math.cos(math.radians(angle))
+    px, py = px - cx, py - cy
+    return (px * c_val - py * s) + cx, (px * s + py * c_val) + cy
+
 def draw():
     c.delete("all")
     sxp = px - camx
-    cx, cy = sxp + w/2, py + h/2
-
-    # Player Cube
-    p1 = rotate_point(cx, cy, rot, sxp, py)
-    p2 = rotate_point(cx, cy, rot, sxp + w, py)
-    p3 = rotate_point(cx, cy, rot, sxp + w, py + h)
-    p4 = rotate_point(cx, cy, rot, sxp, py + h)
-    c.create_polygon(p1, p2, p3, p4, fill="cyan", outline="white", width=1)
-
-    # DEBUG: Player Hitboxes
-    # Hazard Hitbox (Blue)
-    c.create_rectangle(sxp, py, sxp + w, py + h, outline="blue")
-    # Block Hitbox (Yellow)
-    inner_size = 30 / 2.5
-    io = (30 - inner_size) / 2
-    c.create_rectangle(sxp + io, py + io, sxp + io + inner_size, py + io + inner_size, outline="yellow")
-
+    cx, cy = sxp + 15, py + 15
+    p_color = "red" if dead else "cyan"
+    
+    p = [rotate_point(cx, cy, rot, sxp + dx, py + dy) for dx, dy in [(0,0), (30,0), (30,30), (0,30)]]
+    c.create_polygon(p, fill=p_color, outline="white")
+    
     for o in objs:
         oid, ox, oy = gv(o, 1), gv(o, 2), gv(o, 3)
         if ox is None or oy is None: continue
-        sx, sy = (ox - GRID/2) - camx, (ch - oy) - GRID/2
-
-        if -GRID < sx < cw:
-            if oid == 1:
-                c.create_rectangle(sx, sy, sx + GRID, sy + GRID, fill="grey", outline="white")
-            elif oid == 8:
-                # Spike visual
-                c.create_polygon(sx, sy+GRID, sx+GRID/2, sy, sx+GRID, sy+GRID, fill="grey")
-                # Spike Hitbox (Red - 12x16 centered)
-                shw, shh = 12, 16
-                shx_off = (30 - shw) / 2
-                shy_off = 30 - shh
-                c.create_rectangle(sx + shx_off, sy + shy_off, sx + shx_off + shw, sy + shy_off + shh, outline="red")
+        sx, sy = (ox - 15) - camx, (ch - oy) - 15
+        if -30 < sx < cw:
+            if oid in BLOCK_IDS:
+                c.create_rectangle(sx, sy, sx+30, sy+30, fill="grey", outline="white")
+            elif oid in SPIKE_IDS:
+                c.create_polygon(sx, sy+30, sx+15, sy, sx+30, sy+30, fill="grey")
+            elif oid == SMALL_SPIKE_ID:
+                c.create_polygon(sx, sy+22.5, sx+15, sy+7.5, sx+30, sy+22.5, fill="grey")
+            elif oid == ORB_YELLOW:
+                c.create_oval(sx+5, sy+5, sx+25, sy+25, outline="yellow", width=2)
+            elif oid == ORB_BLUE:
+                c.create_oval(sx+5, sy+5, sx+25, sy+25, outline="#00A2FF", width=2) # Blue color
 
 # 6. INPUT
-def jump(e):
-    global vy
-    if ong:
-        vy = jmp
-root.bind("<space>", jump)
+def p_dn(e): global pressing; pressing = True
+def p_up(e): global pressing; pressing = False
+root.bind("<Button-1>", p_dn); root.bind("<ButtonRelease-1>", p_up)
+root.bind("<KeyPress-space>", p_dn); root.bind("<KeyRelease-space>", p_up)
 
 update()
 root.mainloop()
