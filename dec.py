@@ -21,7 +21,7 @@ if lvl is None:
 
 # 2. SETUP
 root = tk.Tk()
-root.title("GMD Runner - Instant Blue Orb Fix")
+root.title("GMD Runner - 1 Orb Per Click")
 cw, ch = 900, 500
 c = tk.Canvas(root, width=cw, height=ch, bg="#287DFF", highlightthickness=0)
 c.pack()
@@ -42,10 +42,11 @@ rot, camx = 0, 0
 ong, pressing, dead = False, False, False
 gravity_dir = 1 
 last_orb_id = -1 
+click_used_for_orb = False # THE FIX: Tracks if the current held click already popped an orb
 
 # PHYSICS
 spd = 5.5        
-base_g = 1.08          
+base_g = 1.05          
 jmp_power = -11.65     
 terminal_v = 18   
 
@@ -58,9 +59,10 @@ ORB_BLUE = 84
 last_frame_time = time.time()
 
 def respawn():
-    global px, py, vy, rot, camx, ong, dead, gravity_dir, last_orb_id
+    global px, py, vy, rot, camx, ong, dead, gravity_dir, last_orb_id, click_used_for_orb
     px, py, vy, rot, dead, gravity_dir = SPAWN_X, SPAWN_Y, 0, 0, False, 1
     last_orb_id = -1
+    click_used_for_orb = False
     camx = px - 200
 
 def trigger_death():
@@ -71,7 +73,7 @@ def trigger_death():
 
 # 4. GAME LOOP
 def update():
-    global px, py, vy, ong, camx, rot, last_frame_time, gravity_dir, last_orb_id
+    global px, py, vy, ong, camx, rot, last_frame_time, gravity_dir, last_orb_id, click_used_for_orb
 
     current_time = time.time()
     elapsed = current_time - last_frame_time
@@ -82,6 +84,8 @@ def update():
         if not dead:
             if pressing and ong:
                 vy = jmp_power * gravity_dir
+                # Jumping on ground doesn't count as an orb use, but we reset it for safety
+                click_used_for_orb = False 
 
             px += spd
             camx = px - 200 
@@ -93,11 +97,13 @@ def update():
             ong = False
             if gravity_dir == 1 and py > ch - h:
                 py, vy, ong = ch - h, 0, True
+                click_used_for_orb = False # Reset when landing
             elif gravity_dir == -1 and py < 0:
                 py, vy, ong = 0, 0, True
+                click_used_for_orb = False
 
             orb_touched_this_frame = False
-            io, is_ = 9, 12 # Yellow Hitbox Offset/Size
+            io, is_ = 9, 12 
 
             for o in objs:
                 oid, ox, oy = gv(o, 1), gv(o, 2), gv(o, 3)
@@ -116,6 +122,7 @@ def update():
                                            (gravity_dir == -1 and prev_feet_y >= by + 18)):
                             py = (by - 30) if gravity_dir == 1 else (by + 30)
                             vy, ong = 0, True
+                            click_used_for_orb = False
                         else:
                             if (px + io < bx + 30 and px + io + is_ > bx and 
                                 py + io < by + 30 and py + io + is_ > by):
@@ -132,16 +139,19 @@ def update():
                     if px < bx + 19 and px + 11 > bx and py < by + 22.5 and py + 16.5 > by:
                         trigger_death()
 
+                # ORB LOGIC
                 elif oid in {ORB_YELLOW, ORB_BLUE}:
                     dist = math.sqrt((px+15 - (bx+15))**2 + (py+15 - (by+15))**2)
                     if dist < 25:
                         orb_touched_this_frame = True
-                        if pressing and id(o) != last_orb_id:
+                        # NEW CHECK: Must be pressing AND the click must not be "spent" yet
+                        if pressing and not click_used_for_orb and id(o) != last_orb_id:
                             last_orb_id = id(o)
+                            click_used_for_orb = True # Spend the click
+                            
                             if oid == ORB_YELLOW:
                                 vy = -11.5 * gravity_dir 
                             elif oid == ORB_BLUE:
-                                # PURE INSTANT GRAVITY SWITCH
                                 gravity_dir *= -1
                                 vy = 0 
             
@@ -183,11 +193,15 @@ def draw():
             elif oid == ORB_YELLOW:
                 c.create_oval(sx+5, sy+5, sx+25, sy+25, outline="yellow", width=2)
             elif oid == ORB_BLUE:
-                c.create_oval(sx+5, sy+5, sx+25, sy+25, outline="#00A2FF", width=2) # Blue color
+                c.create_oval(sx+5, sy+5, sx+25, sy+25, outline="#00A2FF", width=2)
 
 # 6. INPUT
 def p_dn(e): global pressing; pressing = True
-def p_up(e): global pressing; pressing = False
+def p_up(e): 
+    global pressing, click_used_for_orb
+    pressing = False
+    click_used_for_orb = False # Release to refresh the click
+
 root.bind("<Button-1>", p_dn); root.bind("<ButtonRelease-1>", p_up)
 root.bind("<KeyPress-space>", p_dn); root.bind("<KeyRelease-space>", p_up)
 
